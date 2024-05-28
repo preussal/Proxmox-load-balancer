@@ -464,14 +464,14 @@ def is_vm_migrateable_to_node(vm_id: int, donor: str, recipient: str, cluster_ob
     logger.debug(f'VM:{vm_id} is in HA group {vm_group}')
 
     if vm_group not in cluster_obj.cl_ha_groups:
-        logger.warn(f'VM:{vm_id} is in HA group {vm_group}, but the group is not found, questionable state?')
+        logger.warning(f'VM:{vm_id} is in HA group {vm_group}, but the group is not found, questionable state?')
         return False
 
     vm_group_nodes = cluster_obj.cl_ha_groups[vm_group]
     logger.debug(f'VM:{vm_id} HA group {vm_group} nodes: {vm_group_nodes}')
 
     if donor not in vm_group_nodes:
-        logger.warn(f'VM:{vm_id} is not in HA group {vm_group} on node {donor}, questionable state?')
+        logger.warning(f'VM:{vm_id} is not in HA group {vm_group} on node {donor}, questionable state?')
         return False
 
     if recipient not in vm_group_nodes:
@@ -500,7 +500,7 @@ def vm_migration(variants: list, cluster_obj: Cluster) -> None:
         if DRY_RUN:
             logger.info('DRY RUN, stop here.')
             break
-        
+
         if vm in cluster_obj.cl_lxcs:
             options = {'target': recipient, 'restart': 1}
             url = f'{cluster_obj.server}/api2/json/nodes/{donor}/lxc/{vm}/migrate'
