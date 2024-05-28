@@ -35,6 +35,7 @@ CPU_CONFIG_DEVIATION_DURATION_SECONDS = cfg["parameters"]["cpu_deviation_duratio
 LXC_MIGRATION = cfg["parameters"]["lxc_migration"]
 MIGRATION_TIMEOUT = cfg["parameters"]["migration_timeout"]
 ONLY_ON_MASTER = cfg["parameters"].get("only_on_master", False)
+DRY_RUN = cfg["parameters"]["dry_run"]
 
 """Exclusions"""
 excluded_vms = []
@@ -100,6 +101,9 @@ class Cluster:
         self.cl_lxcs = set()                        # Defined in Cluster.self.cluster_vms
         self.cl_vms_included: dict = {}             # All VMs and LXC are running in a balanced cluster
         self.cl_vms: dict = self.cluster_vms()      # All VMs and Lxc are running in the cluster
+        """HA Groups"""
+        self.cl_ha_groups: dict = self.cluster_ha() # HA group to nodes
+        self.cl_ha_vms: dict = self.cluster_ha_vm() # HA vm to group
         """RAM"""
         self.cl_mem_included: int = 0               # Cluster memory used in bytes for balanced nodes
         self.cl_mem: int = 0                        # Cluster memory used in bytes
@@ -211,6 +215,59 @@ class Cluster:
         del temp
         return vms_dict
 
+    def cluster_ha(self):
+        """Getting HA groups by API"""
+        logger.debug("Launching Cluster.cluster_ha")
+
+        url = f'{self.server}/api2/json/cluster/ha/groups'
+        logger.debug('Attempt to get information about the cluster HA groups...')
+        resources_request = rr = requests.get(url, cookies=payload, verify=False)
+        if resources_request.ok:
+            logger.debug(f'Information about the cluster HA groups has been received. Response code: {rr.status_code}')
+        else:
+            logger.warning(f'Execution error {Cluster.cluster_items.__qualname__}')
+            logger.warning(
+                f'Could not get information about the HA cluster groups. Response code: {rr.status_code}. Reason: ({rr.reason})')
+            sys.exit(0)
+
+        cluster_ha_dict = {}
+        temp = rr.json()['data']
+        del resources_request, rr
+        for item in temp:
+            cluster_ha_dict[item['group']] = item['nodes'].split(',')
+
+        logger.debug(f'HA groups: {cluster_ha_dict}')
+        return cluster_ha_dict
+
+    def cluster_ha_vm(self):
+        """Getting HA vm's group"""
+        logger.debug("Launching Cluster.cluster_ha_vm")
+
+        url = f'{self.server}/api2/json/cluster/ha/status/current'
+        logger.debug('Attempt to get information about the cluster HA status current...')
+        resources_request = rr = requests.get(url, cookies=payload, verify=False)
+        if resources_request.ok:
+            logger.debug(f'Information about the cluster HA groups has been received. Response code: {rr.status_code}')
+        else:
+            logger.warning(f'Execution error {Cluster.cluster_items.__qualname__}')
+            logger.warning(
+                f'Could not get information about the HA status current. Response code: {rr.status_code}. Reason: ({rr.reason})')
+            sys.exit(0)
+
+        ha_vm_dict = {}
+        temp = rr.json()['data']
+        del resources_request, rr
+        for item in temp:
+            if item['type'] != 'service':
+                continue
+
+            # sid example: vm:134
+            vm_id = int(item['sid'].split(':')[1])
+            ha_vm_dict[vm_id] = item['group']
+
+        logger.debug(f'HA vm groups: {ha_vm_dict}')
+        return ha_vm_dict
+
     def cluster_mem(self):
         """Calculating RAM usage from cluster resources"""
         logger.debug("Launching Cluster.cluster_membership")
@@ -289,8 +346,8 @@ def authentication(server: str, data: dict):
 def cluster_load_verification(mem_load: float, cluster_obj: Cluster) -> None:
     """Checking the RAM load of the balanced part of the cluster"""
     logger.debug("Starting cluster_load_verification")
-    if len(cluster_obj.cl_nodes) - len(excluded_nodes) == 1:
-        logger.error('It is impossible to balance one node!')
+    if len(set(cluster_obj.cl_nodes.keys()) - set(excluded_nodes)) <= 1:
+        logger.error('It is impossible to balance <= 1 node!')
         sys.exit(1)
     assert 0 < mem_load < 1, 'The cluster RAM load should be in the range from 0 to 1'
     if mem_load >= THRESHOLD:
@@ -373,6 +430,8 @@ def calculating(hosts: object, cluster_obj: Cluster) -> list:
         cpu_part_of_deviation = sum(values["cpu_deviation"] if node not in host else 0 for node, values in nodes.items())
         mem_part_of_deviation = sum(values["mem_deviation"] if node not in host else 0 for node, values in nodes.items())
         for vm in hosts[host[0]].values():
+            if not is_vm_migrateable_to_node(vm["vmid"], host[0], host[1], cluster_obj):
+                continue
             h0_mem_load = (nodes[host[0]]["mem"] - vm["mem"]) / nodes[host[0]]["maxmem"]
             h0_mem_deviation = h0_mem_load - mem_average if h0_mem_load > mem_average else mem_average - h0_mem_load
             h1_mem_load = (nodes[host[1]]["mem"] + vm["mem"]) / nodes[host[1]]["maxmem"]
@@ -393,7 +452,35 @@ def calculating(hosts: object, cluster_obj: Cluster) -> list:
     return sorted(variants, key=lambda last: last[-1])
 
 
-def vm_migration(variants: list, cluster_obj: object) -> None:
+def is_vm_migrateable_to_node(vm_id: int, donor: str, recipient: str, cluster_obj: Cluster) -> bool:
+    """Checking the possibility of migration"""
+    if vm_id not in cluster_obj.cl_ha_vms:
+        logger.debug(f'VM:{vm_id} is not in any of HA group, migratable')
+        return True
+
+    vm_group = cluster_obj.cl_ha_vms[vm_id]
+    logger.debug(f'VM:{vm_id} is in HA group {vm_group}')
+
+    if vm_group not in cluster_obj.cl_ha_groups:
+        logger.warn(f'VM:{vm_id} is in HA group {vm_group}, but the group is not found, questionable state?')
+        return False
+
+    vm_group_nodes = cluster_obj.cl_ha_groups[vm_group]
+    logger.debug(f'VM:{vm_id} HA group {vm_group} nodes: {vm_group_nodes}')
+
+    if donor not in vm_group_nodes:
+        logger.warn(f'VM:{vm_id} is not in HA group {vm_group} on node {donor}, questionable state?')
+        return False
+
+    if recipient not in vm_group_nodes:
+        logger.debug(f'VM:{vm_id} is not in HA group {vm_group} on node {recipient}, not migratable')
+        return False
+
+    logger.debug(f'VM:{vm_id} is in HA group {vm_group} on node {recipient}, migratable')
+    return True
+
+
+def vm_migration(variants: list, cluster_obj: Cluster) -> None:
     """VM migration function from the suggested variants"""
     logger.debug("Starting vm_migration")
     local_disk = None
@@ -408,15 +495,23 @@ def vm_migration(variants: list, cluster_obj: object) -> None:
             sys.exit(1)
         donor, recipient, vm = variant[:3]
         logger.debug(f'VM:{vm} migration from {donor} to {recipient}')
+        if DRY_RUN:
+            logger.info('DRY RUN, stop here.')
+            break
+        
         if vm in cluster_obj.cl_lxcs:
             options = {'target': recipient, 'restart': 1}
             url = f'{cluster_obj.server}/api2/json/nodes/{donor}/lxc/{vm}/migrate'
         else:
             options = {'target': recipient, 'online': 1}
             url = f'{cluster_obj.server}/api2/json/nodes/{donor}/qemu/{vm}/migrate'
-            check_request = requests.get(url, cookies=payload, verify=False)
-            local_disk = (check_request.json()['data']['local_disks'])
-            local_resources = (check_request.json()['data']['local_resources'])
+            check_request = requests.get(url, cookies=payload, verify=False).json()
+            if not check_request['data']:
+                logger.warning(f'VM:{vm} is not migratable')
+                continue
+
+            local_disk = (check_request['data']['local_disks'])
+            local_resources = (check_request['data']['local_resources'])
         if local_disk or local_resources:
             logger.debug(f'The VM:{vm} has {local_disk if local_disk else local_resources if local_resources else ""}')
             # local_disk & Local_resource need to be reset after the check (if we start with a unmovable VM, the rest are never tested)
@@ -481,7 +576,8 @@ def send_mail(message: str):
         if encryption:
             s.starttls()
         try:
-            s.login(login, password)
+            if login and password:
+                s.login(login, password)
             s.sendmail(msg['From'], [msg['To']], msg.as_string())
             logger.trace('Notification sent')
         except Exception as exc:
@@ -519,6 +615,7 @@ def main():
             logger.info('Waiting 10 seconds for cluster information update')
             sleep(10)
         else:
+            logger.info('No available variants, Wait 60 seconds.')
             sleep(60)
             pass  # TODO Aggressive algorithm
     else:
