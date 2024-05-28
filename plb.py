@@ -260,6 +260,8 @@ class Cluster:
         for item in temp:
             if item['type'] != 'service':
                 continue
+            if "group" not in item:
+                continue
 
             # sid example: vm:134
             vm_id = int(item['sid'].split(':')[1])
