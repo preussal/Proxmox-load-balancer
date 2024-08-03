@@ -41,27 +41,29 @@ Example: cluster load is 50%, the minimum loaded node is 48%, the maximum loaded
 Moreover, it does not matter at all how much RAM the node has.
 3. Do not set the "deviation" value to 0. This will result in a permanent VM migration at the slightest change to the VM["mem"]. The recommended minimum value is 1% for large clusters with many different VMs. For medium and small clusters 3-5%
 4. For the script to work correctly, you need constant access to the Proxmox host. Therefore, I recommend running the script on one of the Proxmox nodes or creating a VM/Lxc in a balanced cluster and configuring the script autorun.
-5. To autorun the script on Linux (ubuntu):
-   	 `apt-get install python3-loguru`
-	 `touch /etc/systemd/system/load-balancer.service`  
-	 `chmod 664 /etc/systemd/system/load-balancer.service`  
-		Add the following lines to it, replacing USERNAME with the name of your Linux user:  
-			
-		[Unit]  
-  		Description=Proxmor cluster load-balancer Service  
-  		After=network.target  
+5. To autorun the script on Linux (ubuntu):  
+```apt-get install python3-loguru```  
+```touch /etc/systemd/system/load-balancer.service```  
+```chmod 664 /etc/systemd/system/load-balancer.service```  
+   
+Add the following lines to it, replacing USERNAME with the name of your Linux user:  
+```
+[Unit]  
+Description=Proxmor cluster load-balancer Service  
+After=network.target  
 
-  		[Service]  
-  		Type=simple  
-  		User=USERNAME  
-		NoNewPrivileges=yes  
-  		ExecStart=/home/USERNAME/plb.py  
-		WorkingDirectory=/home/USERNAME/  
-  		Restart=always  
-  		RestartSec=300  
+[Service]  
+Type=simple  
+User=USERNAME  
+NoNewPrivileges=yes  
+ExecStart=/home/USERNAME/plb.py  
+WorkingDirectory=/home/USERNAME/  
+Restart=always  
+RestartSec=300  
 
-  		[Install]  
- 		WantedBy=multi-user.target  
+[Install]  
+WantedBy=multi-user.target
+```
 				
 ```systemctl daemon-reload```  
 ```systemctl start load-balancer.service```  
