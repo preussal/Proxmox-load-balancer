@@ -172,7 +172,13 @@ class Cluster:
                 f'Could not get information about the HA cluster manager. Response code: {rr.status_code}. Reason: ({rr.reason})')
             sys.exit(0)
 
-        self.master_node = rr.json()['data']['manager_status']['master_node']
+        # This is for detection if a master node a there.
+        try:
+            self.master_node = rr.json()['data']['manager_status']['master_node']
+        except Exception as exc:
+            self.master_node = ''
+            logger.warning(f'Cluster without Master Node')
+
         self.quorate = (rr.json()['data']['quorum']['quorate'] == "1")
         if not self.quorate:
             # This is probably an error condition that should cause a "try again later"
